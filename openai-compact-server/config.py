@@ -1,6 +1,7 @@
 """
 Configuration management for OpenAI-compatible server.
 """
+
 import os
 from pathlib import Path
 from typing import Dict
@@ -20,6 +21,12 @@ class Settings:
 
     # Model pool configuration
     MODEL_POOL_SIZE: int = int(os.getenv("QWEN_MODEL_POOL_SIZE", "2"))
+
+    # Model auto-unload after idle timeout (seconds)
+    # Set to 0 to disable auto-unload
+    MODEL_IDLE_TIMEOUT: int = int(
+        os.getenv("QWEN_MODEL_IDLE_TIMEOUT", "600")
+    )  # 10 minutes default
 
     # Authentication
     API_TOKEN: str = os.getenv("QWEN_API_TOKEN", "sk-test-key")
