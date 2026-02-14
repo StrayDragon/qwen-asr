@@ -29,18 +29,22 @@ from models import (
 # ============================================================================
 
 class ModelPool:
-    """Pool of pre-loaded model contexts for concurrent requests."""
-    
+    """Pool of model contexts with lazy loading and auto-unload."""
+
     def __init__(self):
         self._contexts: dict[str, list[QwenContext]] = {}
         self._lock: dict[str, asyncio.Lock] = {}
+        self._model_dirs: dict[str, str] = {}  # model_name -> model_dir mapping
+        self._last_used: dict[str, float] = {}  # model_name -> last_used_timestamp
         self._initialized = False
-    
+        self._unload_task: Optional[asyncio.Task] = None
+        self._unload_stop_event: Optional[asyncio.Event] = None
+
     async def initialize(self):
-        """Pre-load model instances at startup."""
+        """Initialize pool structure (lazy load on first use)."""
         if self._initialized:
             return
-        
+
         available_models = settings.get_available_models()
         if not available_models:
             raise RuntimeError(
@@ -49,29 +53,91 @@ class ModelPool:
                 "  - qwen3-asr-1.7b\n"
                 "Use: bash download_model.sh"
             )
-        
-        print(f"Loading {len(available_models)} model(s)...")
-        
+
+        # Initialize structures for all available models
         for model_name in available_models:
             model_dir = settings.get_model_dir(model_name)
-            
-            # Create pool for this model
             self._contexts[model_name] = []
             self._lock[model_name] = asyncio.Lock()
-            
-            # Pre-load instances
+            self._model_dirs[model_name] = model_dir
+            self._last_used[model_name] = 0.0  # Never used
+
+        self._initialized = True
+        print(f"Model pool initialized for {len(available_models)} model(s) (lazy loading enabled)")
+        if settings.MODEL_IDLE_TIMEOUT > 0:
+            print(f"Models will auto-unload after {settings.MODEL_IDLE_TIMEOUT}s of inactivity")
+            # Start background monitor task
+            self._unload_stop_event = asyncio.Event()
+            self._unload_task = asyncio.create_task(self._unload_monitor())
+        else:
+            print("Model auto-unload disabled (MODEL_IDLE_TIMEOUT=0)")
+
+    async def shutdown(self):
+        """Cleanup resources."""
+        if self._unload_task:
+            self._unload_stop_event.set()
+            try:
+                await asyncio.wait_for(self._unload_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self._unload_task.cancel()
+            self._unload_task = None
+
+        # Unload all models
+        for model_name in list(self._contexts.keys()):
+            await self._unload_model(model_name)
+
+    async def _ensure_loaded(self, model_name: str):
+        """Ensure model is loaded, load if necessary."""
+        if not self._contexts[model_name]:
+            # Load model instances
+            model_dir = self._model_dirs[model_name]
+            print(f"[{model_name}] Loading model (lazy load)...")
             for i in range(settings.MODEL_POOL_SIZE):
                 ctx = await asyncio.to_thread(QwenContext, model_dir)
                 self._contexts[model_name].append(ctx)
-                print(f"  [{model_name}] Loaded instance {i+1}/{settings.MODEL_POOL_SIZE}")
-        
-        self._initialized = True
-        print("Model pool ready!")
+            print(f"[{model_name}] Model ready ({settings.MODEL_POOL_SIZE} instances)")
+
+    async def _unload_model(self, model_name: str):
+        """Unload all instances of a model to free memory."""
+        if self._contexts[model_name]:
+            print(f"[{model_name}] Unloading model...")
+            # Clear contexts (Python GC should free the C memory)
+            self._contexts[model_name].clear()
+            self._last_used[model_name] = 0.0
+            print(f"[{model_name}] Model unloaded")
+
+    async def _unload_monitor(self):
+        """Background task to monitor and unload idle models."""
+        while not self._unload_stop_event.is_set():
+            try:
+                # Check every 30 seconds
+                await asyncio.wait_for(self._unload_stop_event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                # Check for idle models
+                current_time = asyncio.get_event_loop().time()
+                for model_name in list(self._contexts.keys()):
+                    if self._last_used[model_name] > 0:  # Has been used at least once
+                        idle_time = current_time - self._last_used[model_name]
+                        if idle_time > settings.MODEL_IDLE_TIMEOUT:
+                            # Only unload if no active requests (lock is free)
+                            lock = self._lock[model_name]
+                            if lock.locked():
+                                # Model is in use, skip
+                                continue
+                            async with lock:
+                                # Double-check after acquiring lock
+                                idle_time = asyncio.get_event_loop().time() - self._last_used[model_name]
+                                if idle_time > settings.MODEL_IDLE_TIMEOUT:
+                                    await self._unload_model(model_name)
+
+    def _update_last_used(self, model_name: str):
+        """Update last used timestamp."""
+        self._last_used[model_name] = asyncio.get_event_loop().time()
     
     @asynccontextmanager
     async def acquire(self, model_name: str):
         """Acquire a model context from the pool.
-        
+
         Usage:
             async with pool.acquire(model_name) as ctx:
                 # Use ctx
@@ -83,10 +149,16 @@ class ModelPool:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Model '{model_name}' not available. Available: {available}"
             )
-        
+
+        # Lazy load model if needed
+        await self._ensure_loaded(model_name)
+
+        # Update last used time
+        self._update_last_used(model_name)
+
         lock = self._lock[model_name]
         contexts = self._contexts[model_name]
-        
+
         async with lock:
             if not contexts:
                 # Pool exhausted - wait briefly for a context to be returned
@@ -97,13 +169,15 @@ class ModelPool:
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail=f"All model instances for '{model_name}' are busy. Try again later."
                     )
-            
+
             ctx = contexts.pop()
             try:
                 yield ctx
             finally:
                 # Return context to pool
                 contexts.append(ctx)
+                # Update last used time after request completion
+                self._update_last_used(model_name)
 
 
 # Global model pool
@@ -117,16 +191,17 @@ model_pool = ModelPool()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    # Startup: load models
+    # Startup: initialize pool (lazy load on first request)
     print("Starting Qwen ASR OpenAI-Compatible API Server...")
     await model_pool.initialize()
     print(f"\nServer ready at http://{settings.HOST}:{settings.PORT}")
     print(f"API docs: http://{settings.HOST}:{settings.PORT}/docs")
-    
+
     yield
-    
-    # Shutdown: cleanup (automatic via __del__)
+
+    # Shutdown: cleanup
     print("Shutting down...")
+    await model_pool.shutdown()
 
 
 app = FastAPI(

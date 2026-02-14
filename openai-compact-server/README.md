@@ -10,6 +10,7 @@ OpenAI Audio API 兼容的 Qwen ASR 语音转文字服务器。
 - ✅ 多模型支持 (0.6B / 1.7B)
 - ✅ 模型池（并发请求）
 - ✅ SSE (Server-Sent Events) 流式输出
+- ✅ 懒加载与自动卸载（空闲超时释放内存）
 
 ## 快速开始
 
@@ -89,7 +90,24 @@ data: {"type": "transcript.text.done", "text": "full text", "usage": {...}}
 | `QWEN_HOST` | 0.0.0.0 | 监听地址 |
 | `QWEN_PORT` | 8011 | 监听端口 |
 | `QWEN_MODEL_POOL_SIZE` | 2 | 每个模型的并发实例数 |
+| `QWEN_MODEL_IDLE_TIMEOUT` | 300 | 模型空闲超时（秒），0=禁用自动卸载 |
 | `QWEN_API_TOKEN` | sk-test-key | API 认证 token |
+
+### 懒加载与自动卸载
+
+服务器采用懒加载策略：
+- 启动时不加载模型，仅在首次请求时加载
+- 空闲超过 `QWEN_MODEL_IDLE_TIMEOUT` 秒后自动卸载模型释放内存
+- 下次请求时自动重新加载
+
+示例：
+```bash
+# 禁用自动卸载（模型常驻内存）
+export QWEN_MODEL_IDLE_TIMEOUT=0
+
+# 1 分钟无请求后卸载
+export QWEN_MODEL_IDLE_TIMEOUT=60
+```
 
 ## 请求参数
 
