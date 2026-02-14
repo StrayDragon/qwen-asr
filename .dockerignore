@@ -1,0 +1,52 @@
+# .dockerignore - exclude from Docker build context
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest/
+*.so
+*.egg/
+*.egg-info/
+dist/
+build/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docs
+*.md
+README.*
+LICENSE
+
+# Tests & samples
+samples/
+samples/**/*
+tests/
+tests/**/*
+
+# Local artifacts
+*.log
+.DS_Store
+*.swp
+*.swo
+
+# Model directories (will be mounted)
+qwen3-asr-*/
+Qwen3-ASR/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Justfile (fork project only, not needed in container)
+justfile
+justfile~
+
+# Lock files not needed in image
+uv.lock
+
