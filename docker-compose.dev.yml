@@ -1,6 +1,9 @@
 services:
   qwen-asr-api:
-    image: ghcr.io/straydragon/qwen-asr:latest
+    build:
+      context: .
+      args:
+        USE_CN_MIRROR: "true"
     container_name: qwen-asr-openai-api
     ports:
       - "8011:8011"
