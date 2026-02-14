@@ -1,0 +1,17 @@
+[project]
+name = "openai-compact-server"
+version = "1.0.0"
+description = "OpenAI-Compatible Audio API Server for Qwen ASR"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+    "librosa>=0.11.0",
+    "soundfile>=0.12.1",
+    "numpy>=2.0.0",
+    "httpx>=0.28.0",
+]
+
+[dependency-groups]
+dev = []

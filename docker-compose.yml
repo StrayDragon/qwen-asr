@@ -1,0 +1,27 @@
+services:
+  qwen-asr-api:
+    build:
+      context: .
+      args:
+        USE_CN_MIRROR: "true"
+    container_name: qwen-asr-openai-api
+    ports:
+      - "8011:8011"
+    volumes:
+      # Mount model directory (bind mount for easy testing)
+      - ./qwen3-asr-0.6b:/app/qwen3-asr-0.6b:ro
+      - ./qwen3-asr-1.7b:/app/qwen3-asr-1.7b:ro
+    environment:
+      - QWEN_HOST=0.0.0.0
+      - QWEN_PORT=8011
+      - QWEN_MODEL_POOL_SIZE=2
+      - QWEN_API_TOKEN=sk-test-key
+      # Optional: Enable debug logging
+      # - QWEN_LOG_LEVEL=debug
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8011/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
