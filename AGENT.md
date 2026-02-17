@@ -98,7 +98,92 @@ From `qwen_load()` and CLI:
 - `asr_regression.py`
   - quality + focused regression checks
 - `download_model.sh`
-  - interactive small/large model downloader
+  - interactive small/large model downloader (**user-run only**; agents must not download weights automatically)
+
+## Model Files Policy (Do Not Auto-Download)
+
+Model weights are large (GBs) and may be subject to network / licensing / access constraints.
+To keep CI and agent runs reproducible + safe, agents must **never** download weights automatically.
+
+### Hard rules (agents)
+
+- Do **not** run `download_model.sh`, `curl`, `wget`, `huggingface-cli`, `git lfs pull`, or any other command that fetches model weights.
+- Do **not** “helpfully” fix missing models by downloading them.
+- If a build/test/run requires a model that is missing locally:
+  1) clearly report which model dir is missing or incomplete
+  2) provide the exact user-run command(s) to obtain it
+  3) stop and wait (do not proceed with weight downloads)
+
+Suggested report template (copy/paste to users):
+```text
+Model weights are missing or incomplete: qwen3-asr-____/
+Please download the model manually (I won't fetch weights automatically):
+
+  ./download_model.sh --model small   # 0.6B -> ./qwen3-asr-0.6b
+  ./download_model.sh --model large   # 1.7B -> ./qwen3-asr-1.7b
+
+Then verify locally:
+
+  test -f qwen3-asr-0.6b/model.safetensors && echo OK
+```
+
+### What “model present” means (easy checklist)
+
+This repo expects model directories under the repo root:
+
+- **0.6B**: `qwen3-asr-0.6b/`
+- **1.7B**: `qwen3-asr-1.7b/`
+
+Minimal file set (what `download_model.sh` fetches):
+
+- 0.6B:
+  - `qwen3-asr-0.6b/model.safetensors`
+  - `qwen3-asr-0.6b/config.json`
+  - `qwen3-asr-0.6b/generation_config.json`
+  - `qwen3-asr-0.6b/vocab.json`
+  - `qwen3-asr-0.6b/merges.txt`
+- 1.7B:
+  - `qwen3-asr-1.7b/model.safetensors.index.json`
+  - `qwen3-asr-1.7b/model-00001-of-00002.safetensors`
+  - `qwen3-asr-1.7b/model-00002-of-00002.safetensors`
+  - `qwen3-asr-1.7b/config.json`
+  - `qwen3-asr-1.7b/generation_config.json`
+  - `qwen3-asr-1.7b/vocab.json`
+  - `qwen3-asr-1.7b/merges.txt`
+
+Quick verify (no downloads, just local checks):
+```bash
+ls -lh qwen3-asr-0.6b/ | head
+ls -lh qwen3-asr-1.7b/ | head
+test -f qwen3-asr-0.6b/model.safetensors && echo "0.6B OK" || echo "0.6B MISSING"
+test -f qwen3-asr-1.7b/model.safetensors.index.json && echo "1.7B OK" || echo "1.7B MISSING"
+```
+
+### Common “model missing” symptoms (and how to recognize them)
+
+If the directory exists but is empty/incomplete, the CLI typically errors like:
+```text
+multi_safetensors_open: no safetensors files in qwen3-asr-1.7b
+qwen_load: cannot open safetensors in qwen3-asr-1.7b
+Failed to load model from qwen3-asr-1.7b
+```
+
+This is not a code bug: it means weights are not present locally.
+
+### User-run examples (manual model download)
+
+Agents may only **suggest** these commands; users must run them themselves:
+
+```bash
+# Download 0.6B (small) into ./qwen3-asr-0.6b
+./download_model.sh --model small
+
+# Download 1.7B (large) into ./qwen3-asr-1.7b
+./download_model.sh --model large
+
+# Download into a custom directory
+./download_model.sh --model small --dir /path/to/qwen3-asr-0.6b
+```
 
 ## Build + Run
 
@@ -107,14 +192,41 @@ Build:
 make blas
 ```
 
-Smoke run:
+Smoke run (offline/file input, 0.6B):
 ```bash
-./qwen_asr -d qwen3-asr-0.6b -i samples/jfk.wav
+./qwen_asr -d qwen3-asr-0.6b -i samples/jfk.wav --silent
+
+# Expected: a single transcript line on stdout, starting with:
+# "And so, my fellow Americans, ask not what your country can do for you; ..."
 ```
 
-Stdin path:
+Stdin path (offline/stdin input, 0.6B):
 ```bash
-cat samples/jfk.wav | ./qwen_asr -d qwen3-asr-0.6b --stdin
+cat samples/jfk.wav | ./qwen_asr -d qwen3-asr-0.6b --stdin --silent
+```
+
+Stdin streaming (0.6B):
+```bash
+cat samples/jfk.wav | ./qwen_asr -d qwen3-asr-0.6b --stdin --stream --silent
+
+# Expected: same final transcript as the offline command above.
+```
+
+Beginner copy/paste (0.6B end-to-end sanity):
+```bash
+set -e
+
+# 0) Confirm model files exist (no downloads)
+test -f qwen3-asr-0.6b/model.safetensors || { echo "Missing: qwen3-asr-0.6b/model.safetensors"; exit 1; }
+
+# 1) Build
+make blas
+
+# 2) Offline smoke (should print the JFK quote)
+./qwen_asr -d qwen3-asr-0.6b -i samples/jfk.wav --silent
+
+# 3) Stdin streaming smoke (should match the quote above)
+cat samples/jfk.wav | ./qwen_asr -d qwen3-asr-0.6b --stdin --stream --silent
 ```
 
 ## Regression Workflow
@@ -125,6 +237,21 @@ make test
 # equivalent to:
 ./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b
 ```
+
+Beginner-friendly: 0.6B-only verification (no 1.7B needed):
+```bash
+# Focused checks (fast, stable, easiest to interpret)
+./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-0.6b --segment-check-only
+./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-0.6b --stream-check-only
+./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-0.6b --stream-cache-check-only
+
+# Optional: full sample regression on 0.6B (may be stricter/noisier than 1.7B)
+./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-0.6b
+```
+
+What “success” looks like:
+- Focused checks end with: `Focused regression checks PASSED`
+- Full regression ends with: `Regression PASSED: ... samples within threshold`
 
 Focused checks:
 ```bash
@@ -139,6 +266,20 @@ Notes:
 - This means both model dirs are typically required:
   - main model (`--model-dir`, default `qwen3-asr-1.7b`)
   - stream-cache model (`--stream-cache-model-dir`, default `qwen3-asr-0.6b`)
+- If `make test` fails with “no safetensors files”, the model directory is missing/incomplete. See: **Model Files Policy (Do Not Auto-Download)**.
+
+How to debug a single failing sample:
+1. Re-run the reported WAV directly (to see raw transcript):
+   - `./qwen_asr -d qwen3-asr-1.7b -i samples/path/to/sample.wav --silent`
+2. Compare with its reference file next to it:
+   - `cat samples/path/to/sample.txt`
+3. If you want the regression harness on a smaller subset, point `--samples-root` at a subfolder:
+   - `./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b --samples-root samples/night_of_the_living_dead_1968`
+4. If you want to isolate only the quality regression loop (skip focused checks):
+   - `./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b --samples-root samples/night_of_the_living_dead_1968 --skip-segment-check --skip-stream-check --skip-stream-cache-check`
+5. If you need extra CLI flags, forward them via `--arg` (repeatable):
+   - example: force English + 4 threads
+     - `./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b --arg --language --arg en --arg -t --arg 4`
 
 Reference management:
 ```bash
